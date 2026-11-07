@@ -1,0 +1,118 @@
+gRPC Tutorial — Key/Value Example
+==================================
+
+Before tackling the HW3 gRPC blockserver, work through this tiny key/value
+example to get comfortable with the gRPC toolchain on your machine.
+
+
+1. Install gRPC
+---------------
+
+You need two Python packages:
+
+    grpcio          the gRPC runtime
+    grpcio-tools    the protobuf compiler (protoc) used to generate stubs
+
+Install both with pip3:
+
+    pip3 install grpcio grpcio-tools
+
+If your environment forbids global installs, use a virtual environment first:
+
+    python3 -m venv venv
+    source venv/bin/activate         (on macOS / Linux)
+    venv\Scripts\activate            (on Windows)
+    pip3 install grpcio grpcio-tools
+
+Verify the installation:
+
+    python3 -c "import grpc; from grpc_tools import protoc; print('grpc OK')"
+
+You should see "grpc OK" with no traceback.
+
+
+2. Files
+--------
+
+In the same directory as this file:
+
+    keyvalue_server_grpc.py   tiny gRPC server holding an in-memory dict
+    keyvalue_client_grpc.py   interactive client that talks to the server
+
+Both files are self-contained: the .proto service definition is embedded as
+a string at the top of keyvalue_server_grpc.py and compiled at startup into
+keyvalue_pb2 / keyvalue_pb2_grpc modules. The client imports those modules
+from the server file so the .proto is single-sourced.
+
+
+3. Run the example
+------------------
+
+Open two terminals in this directory.
+
+Terminal 1 — start the server (pick any free port; 9100 below):
+
+    python3 keyvalue_server_grpc.py -port 9100
+
+You should see:
+
+    Running keyvalue server on port 9100
+
+Leave it running.
+
+Terminal 2 — start the client against the same port:
+
+    python3 keyvalue_client_grpc.py -port 9100
+
+The client prints a usage hint and a prompt:
+
+    Commands: Put <key> <value>  |  Get <key>  |  exit
+    >
+
+Try the following session:
+
+    > Put name alice
+    OK status=0
+    > Get name
+    alice
+    > Get missing
+    (no entry for 'missing')
+    > Put name bob
+    OK status=0
+    > Get name
+    bob
+    > exit
+
+When you're done with the server, stop it with Ctrl-C in Terminal 1.
+
+
+4. What to look at in the code
+------------------------------
+
+Read both files end to end; they are short. Pay attention to:
+
+  - PROTO_SRC in keyvalue_server_grpc.py — the service definition. Three
+    message types (PutRequest/Reply, GetRequest/Reply) and one service
+    (KeyValue) with two RPCs. This is the gRPC analogue of registering
+    methods on a SimpleXMLRPCServer.
+
+  - _compile_proto() — runs protoc at startup to produce the _pb2 and
+    _pb2_grpc modules. In a production setup you would invoke protoc once
+    at build time and check the generated files in. Compiling at startup
+    is a teaching convenience.
+
+  - KeyValueServicer — the server-side handler class. Subclasses the
+    generated KeyValueServicer base and implements Put / Get. Compare with
+    the XML-RPC pattern in blockserver.py where you called
+    server.register_function(Put).
+
+  - The client's grpc.insecure_channel(...) and KeyValueStub(channel) calls
+    — these are the gRPC equivalents of xmlrpc.client.ServerProxy(url).
+
+  - _is_timeout(rpc_error) in keyvalue_client_grpc.py — the helper that
+    detects DEADLINE_EXCEEDED / UNAVAILABLE errors. The same helper lives
+    in HW3's block.py; copy the pattern when you write your own gRPC
+    client.
+
+Once you can run this example end to end, you have everything you need to
+read and modify blockserver_grpc.py and block.py for HW3.
