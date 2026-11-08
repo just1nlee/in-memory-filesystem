@@ -1,0 +1,58 @@
+# tGRPC6: Four clients, interleaved writes / reads / mv / rm
+# Stress scenario with the maximum number of clients exercising
+# create / mkdir / append / mv / rm under the new cache mechanism.
+# Every writer's release bumps the server timestamp; every other
+# client invalidates exactly once on its next acquire.
+SERVERSTART(S0, "-nb 256 -bs 256 -port 8000")
+CLIENTSTART(C0, "-bs 256 -nb 256 -is 32 -ni 32 -cid 0 -port 8000")
+CLIENTSTART(C1, "-bs 256 -nb 256 -is 32 -ni 32 -cid 1 -port 8000")
+CLIENTSTART(C2, "-bs 256 -nb 256 -is 32 -ni 32 -cid 2 -port 8000")
+CLIENTSTART(C3, "-bs 256 -nb 256 -is 32 -ni 32 -cid 3 -port 8000")
+
+# --- Round 1: C0 sets up a directory tree ---
+SHELLRUN(C0, "mkdir docs")
+SHELLRUN(C0, "create readme")
+SHELLRUN(C0, "append readme content")
+
+# C1 and C2 sync, both should see the new structure
+SHELLRUN(C1, "ls")
+SHELLRUN(C1, "cat readme")
+SHELLRUN(C2, "ls")
+
+# --- Round 2: C3 writes; others must invalidate ---
+SHELLRUN(C3, "create todo")
+SHELLRUN(C3, "append todo task1")
+
+# C0 / C1 / C2 each invalidate exactly once
+SHELLRUN(C0, "ls")
+SHELLRUN(C1, "cat todo")
+SHELLRUN(C2, "ls")
+
+# --- Round 3: C2 renames the file via mv ---
+SHELLRUN(C2, "mv todo done")
+
+# Everyone except C2 must invalidate to see the new name
+SHELLRUN(C0, "ls")
+SHELLRUN(C1, "ls")
+SHELLRUN(C3, "ls")
+
+# C2 sees its own mv without an invalidation
+SHELLRUN(C2, "cat done")
+
+# --- Round 4: C1 deletes the renamed file; the rest re-sync ---
+SHELLRUN(C1, "rm done")
+SHELLRUN(C0, "ls")
+SHELLRUN(C2, "ls")
+SHELLRUN(C3, "ls")
+
+# Read-only operations across all four clients should now stay warm
+SHELLRUN(C0, "cat readme")
+SHELLRUN(C1, "cat readme")
+SHELLRUN(C2, "cat readme")
+SHELLRUN(C3, "cat readme")
+
+CLIENTKILL(C0)
+CLIENTKILL(C1)
+CLIENTKILL(C2)
+CLIENTKILL(C3)
+SERVERKILL(S0)

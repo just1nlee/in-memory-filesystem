@@ -1,0 +1,30 @@
+# tGRPC3: Two clients, basic write-then-read coordination
+# C0 writes, C1 must observe the write after its first cache sync.
+# Symmetrically, C1 writes and C0 must observe the change.
+SERVERSTART(S0, "-nb 256 -bs 256 -port 8000")
+CLIENTSTART(C0, "-bs 256 -nb 256 -is 32 -ni 32 -cid 0 -port 8000")
+CLIENTSTART(C1, "-bs 256 -nb 256 -is 32 -ni 32 -cid 1 -port 8000")
+
+# --- C0 writes; C1 reads back ---
+SHELLRUN(C0, "create f1")
+SHELLRUN(C0, "append f1 fromC0")
+
+# C1's first acquire should sync up via ShouldInvalidate
+SHELLRUN(C1, "ls")
+SHELLRUN(C1, "cat f1")
+
+# --- C1 writes; C0 reads back ---
+SHELLRUN(C1, "create f2")
+SHELLRUN(C1, "append f2 fromC1")
+
+# C0 must now invalidate its cache (last_writer is C1, not C0)
+SHELLRUN(C0, "ls")
+SHELLRUN(C0, "cat f2")
+
+# Original C0 file should still be readable by both clients
+SHELLRUN(C0, "cat f1")
+SHELLRUN(C1, "cat f1")
+
+CLIENTKILL(C0)
+CLIENTKILL(C1)
+SERVERKILL(S0)

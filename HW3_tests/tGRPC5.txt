@@ -1,0 +1,44 @@
+# tGRPC5: Three clients, mixed read/write with self-write check
+# Verifies that:
+#   - a writer reading back its own state does NOT invalidate (cid match)
+#   - a second writer correctly invalidates the other two clients' caches
+#   - a third client reads up-to-date data from either writer
+SERVERSTART(S0, "-nb 256 -bs 256 -port 8000")
+CLIENTSTART(C0, "-bs 256 -nb 256 -is 32 -ni 32 -cid 0 -port 8000")
+CLIENTSTART(C1, "-bs 256 -nb 256 -is 32 -ni 32 -cid 1 -port 8000")
+CLIENTSTART(C2, "-bs 256 -nb 256 -is 32 -ni 32 -cid 2 -port 8000")
+
+# --- C0 writes some initial state ---
+SHELLRUN(C0, "create shared")
+SHELLRUN(C0, "append shared from-C0")
+
+# C1 and C2 each pay one invalidation to sync
+SHELLRUN(C1, "cat shared")
+SHELLRUN(C2, "cat shared")
+
+# C0 reads its own work back: no invalidation (last_writer == 0)
+SHELLRUN(C0, "cat shared")
+SHELLRUN(C0, "ls")
+
+# --- C1 writes; both C0 and C2 must invalidate next time ---
+SHELLRUN(C1, "create from1")
+SHELLRUN(C1, "append from1 hi")
+
+# C1 reads its own write: no invalidation
+SHELLRUN(C1, "cat from1")
+
+# C0 and C2 each invalidate once (last_writer now == 1)
+SHELLRUN(C0, "ls")
+SHELLRUN(C0, "cat from1")
+SHELLRUN(C2, "ls")
+SHELLRUN(C2, "cat from1")
+
+# Subsequent reads should be cache-warm for all three
+SHELLRUN(C0, "cat shared")
+SHELLRUN(C1, "cat shared")
+SHELLRUN(C2, "cat shared")
+
+CLIENTKILL(C0)
+CLIENTKILL(C1)
+CLIENTKILL(C2)
+SERVERKILL(S0)

@@ -1,0 +1,39 @@
+# tGRPC2: Single client, broader command coverage over gRPC
+# Exercises hard links, symbolic links, mv, and rm on a single client to
+# make sure the gRPC transport handles the full HW2 + mv command set.
+SERVERSTART(S0, "-nb 256 -bs 256 -port 8000")
+CLIENTSTART(C0, "-bs 256 -nb 256 -is 32 -ni 32 -cid 0 -port 8000")
+
+# Files with content
+SHELLRUN(C0, "create f1")
+SHELLRUN(C0, "append f1 alpha")
+
+# Hard link should share refcnt with the source file
+SHELLRUN(C0, "lnh f1 f1hard")
+
+# Symbolic link should resolve to f1's content
+SHELLRUN(C0, "lns f1 f1sym")
+SHELLRUN(C0, "ls")
+SHELLRUN(C0, "cat f1hard")
+SHELLRUN(C0, "cat f1sym")
+
+# Rename the hard link via mv (target absent, no path separator)
+SHELLRUN(C0, "mv f1hard f1renamed")
+SHELLRUN(C0, "ls")
+SHELLRUN(C0, "cat f1renamed")
+
+# Move a file into a directory
+SHELLRUN(C0, "mkdir d1")
+SHELLRUN(C0, "mv f1renamed d1")
+SHELLRUN(C0, "ls")
+SHELLRUN(C0, "cd d1")
+SHELLRUN(C0, "ls")
+SHELLRUN(C0, "cat f1renamed")
+SHELLRUN(C0, "cd /")
+
+# rm a regular file
+SHELLRUN(C0, "rm f1sym")
+SHELLRUN(C0, "ls")
+
+CLIENTKILL(C0)
+SERVERKILL(S0)

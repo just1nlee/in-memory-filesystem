@@ -1,0 +1,23 @@
+# tGRPC1: Single client, basic file operations over gRPC
+# Smoke test that Get / Put / RSM and the basic FS shell commands all work
+# end-to-end against the gRPC block server.
+SERVERSTART(S0, "-nb 256 -bs 256 -port 8000")
+CLIENTSTART(C0, "-bs 256 -nb 256 -is 32 -ni 32 -cid 0 -port 8000")
+
+# Create, write, read back
+SHELLRUN(C0, "create f1")
+SHELLRUN(C0, "append f1 hello")
+SHELLRUN(C0, "cat f1")
+SHELLRUN(C0, "ls")
+
+# Make a directory and put a file in it
+SHELLRUN(C0, "mkdir d1")
+SHELLRUN(C0, "cd d1")
+SHELLRUN(C0, "create inner")
+SHELLRUN(C0, "append inner world")
+SHELLRUN(C0, "cat inner")
+SHELLRUN(C0, "cd /")
+SHELLRUN(C0, "ls")
+
+CLIENTKILL(C0)
+SERVERKILL(S0)

@@ -1,0 +1,46 @@
+  │   File    │ Clients │  Focus           │                            Key scenario                            │
+  ├───────────┼─────────┼──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ tGRPC1.txt│    1    │ gRPC smoke test  │ Basic create / append / cat / ls / mkdir / cd over the new gRPC     │
+  │           │         │                  │ transport; verifies the Get / Put / RSM plumbing end-to-end         │
+  ├───────────┼─────────┼──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ tGRPC2.txt│    1    │ command coverage │ Single client exercises lnh, lns, mv (new HW2 addition), rm; full   │
+  │           │         │                  │ HW2 + mv shell command set over gRPC                                │
+  ├───────────┼─────────┼──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ tGRPC3.txt│    2    │ cross-client R/W │ C0 writes / C1 reads, then C1 writes / C0 reads; both directions    │
+  │           │         │                  │ of the cache-coherence transition exercised                         │
+  ├───────────┼─────────┼──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ tGRPC4.txt│    2    │ warm-cache demo  │ C1 issues many read-only commands after a single C0 write phase;    │
+  │           │         │                  │ expect exactly ONE CACHE_INVALIDATED on C1's first acquire and ZERO │
+  │           │         │                  │ thereafter — the key improvement over the Spring26 nb-2 mechanism   │
+  ├───────────┼─────────┼──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ tGRPC5.txt│    3    │ self-write check │ A writer (C0, then C1) reads back its own data with NO invalidation;│
+  │           │         │                  │ the third client (C2) and the other writer must invalidate exactly │
+  │           │         │                  │ once on each writer-transition                                      │
+  ├───────────┼─────────┼──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ tGRPC6.txt│    4    │ multi-writer     │ Four clients with four distinct writers in sequence (C0, C3, C2,    │
+  │           │         │ stress           │ C1); includes mv and rm; every non-writer invalidates once per      │
+  │           │         │                  │ writer-other-than-itself, self-writes never invalidate              │
+  └───────────┴─────────┴──────────────────┴─────────────────────────────────────────────────────────────────────┘
+
+Note on cache-invalidation counts
+---------------------------------
+
+The new server-side cache coherence (UpdateLastWriter / ShouldInvalidate)
+exposes a precise invariant about how many times each client should print
+"CACHE_INVALIDATED" during a test. The counts a correct implementation
+should produce against the provided test scripts are:
+
+    tGRPC1   C0: 1
+    tGRPC2   C0: 1
+    tGRPC3   C0: 2   C1: 1
+    tGRPC4   C0: 1   C1: 1
+    tGRPC5   C0: 2   C1: 1   C2: 2
+    tGRPC6   C0: 4   C1: 3   C2: 3   C3: 3
+
+A client invalidates exactly:
+  - once on its first acquire (initial sync from timestamp_client = 0)
+  - once per subsequent transition where a DIFFERENT client became the
+    most recent writer between two of its acquires
+
+It NEVER invalidates for its own writes (the cid-based check in
+ShouldInvalidate suppresses self-invalidation).

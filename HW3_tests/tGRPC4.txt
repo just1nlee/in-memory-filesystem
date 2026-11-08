@@ -1,0 +1,37 @@
+# tGRPC4: Two clients, warm cache demonstration
+# Highlights the improvement over the Spring26 mechanism: once C1 syncs
+# with the server, repeated read-only commands by C1 must NOT cause
+# further CACHE_INVALIDATED events. Same for C0 returning after its own
+# writes — the cid-based self-write check in ShouldInvalidate keeps its
+# cache warm.
+SERVERSTART(S0, "-nb 256 -bs 256 -port 8000")
+CLIENTSTART(C0, "-bs 256 -nb 256 -is 32 -ni 32 -cid 0 -port 8000")
+CLIENTSTART(C1, "-bs 256 -nb 256 -is 32 -ni 32 -cid 1 -port 8000")
+
+# Establish a stable state — only writes happen up-front
+SHELLRUN(C0, "create f1")
+SHELLRUN(C0, "append f1 stable")
+SHELLRUN(C0, "create f2")
+SHELLRUN(C0, "append f2 also-stable")
+SHELLRUN(C0, "mkdir d1")
+
+# C1's first acquire: ONE invalidation expected (transition from
+# last_writer=C0 to C1 with a stale local timestamp).
+SHELLRUN(C1, "cat f1")
+# Subsequent read-only commands must keep C1's cache warm —
+# ShouldInvalidate returns the same timestamp, so no invalidation.
+SHELLRUN(C1, "cat f2")
+SHELLRUN(C1, "ls")
+SHELLRUN(C1, "cat f1")
+SHELLRUN(C1, "cat f2")
+SHELLRUN(C1, "ls")
+
+# C0 returns without intervening writes by anyone else; since C0 is still
+# the last writer, its first acquire should NOT produce a CACHE_INVALIDATED.
+SHELLRUN(C0, "cat f1")
+SHELLRUN(C0, "cat f2")
+SHELLRUN(C0, "ls")
+
+CLIENTKILL(C0)
+CLIENTKILL(C1)
+SERVERKILL(S0)
