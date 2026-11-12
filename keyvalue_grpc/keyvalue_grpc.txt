@@ -114,5 +114,5 @@ Read both files end to end; they are short. Pay attention to:
     in HW3's block.py; copy the pattern when you write your own gRPC
     client.
 
-Once you can run this example end to end, you have everything you need to
-read and modify blockserver_grpc.py and block.py for HW3.
+Once you can run this example end to end, you have everything you need to 
+read and modify blockserver.py and block.py for HW3.
