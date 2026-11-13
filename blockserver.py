@@ -71,17 +71,19 @@ class BlockServerServicer(blockserver_pb2_grpc.BlockServerServicer):
     self.raw_blocks = raw_blocks
 
   def Put(self, request, context):
-    self.raw_blocks.block[request.block_number] = bytearray(request.data)
-    self.raw_blocks.Sleep()
+    with self.raw_blocks.lock:
+      self.raw_blocks.block[request.block_number] = bytearray(request.data)
+      self.raw_blocks.Sleep()
     return blockserver_pb2.PutReply(status=0)
 
   def Get(self, request, context):
-    result = bytes(self.raw_blocks.block[request.block_number])
-    self.raw_blocks.Sleep()
+    with self.raw_blocks.lock:
+      result = bytes(self.raw_blocks.block[request.block_number])
+      self.raw_blocks.Sleep()
     return blockserver_pb2.GetReply(data=result)
 
   def RSM(self, request, context):
-    with self.raw_blocks.rsm_lock:
+    with self.raw_blocks.lock:
       # Check if this request_id has already been processed (duplicate detection)
       if request.request_id in self.raw_blocks.rsm_reply_cache:
         print("RSM_CACHED_REPLY")
@@ -103,7 +105,7 @@ class DiskBlocks():
     # initialize request counter
     self.counter = 0
     self.delayat = delayat
-    self.rsm_lock = threading.Lock()
+    self.lock = threading.Lock()
     # RSM reply cache for duplicate detection: request_id -> cached result
     self.rsm_reply_cache = {}
     # Initialize raw blocks
