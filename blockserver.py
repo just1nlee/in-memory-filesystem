@@ -1,14 +1,98 @@
-import pickle, logging
 import argparse
 import time
-import fsconfig
+import os
+import sys
+import tempfile
+from concurrent import futures
 
-from xmlrpc.server import SimpleXMLRPCServer
-from xmlrpc.server import SimpleXMLRPCRequestHandler
+import grpc
+from grpc_tools import protoc
 
-# Restrict to a particular path.
-class RequestHandler(SimpleXMLRPCRequestHandler):
-  rpc_paths = ('/RPC2',)
+
+# -----------------------------------------------------------------------------
+# Service contract.
+# -----------------------------------------------------------------------------
+
+PROTO_SRC = '''syntax = "proto3";
+
+package blockserver;
+
+message PutRequest  { int32  block_number = 1; bytes data = 2; }
+message PutReply    { int32  status = 1; }
+
+message GetRequest  { int32  block_number = 1; }
+message GetReply    { bytes  data = 1; }
+
+message RSMRequest  { int32  block_number = 1; string request_id = 2; }
+message RSMReply    { bytes  data = 1; }
+
+service BlockServer {
+    rpc Put (PutRequest) returns (PutReply);
+    rpc Get (GetRequest) returns (GetReply);
+    rpc RSM (RSMRequest) returns (RSMReply);
+}
+'''
+
+def _compile_proto():
+    """Compile PROTO_SRC into blockserver_pb2 / blockserver_pb2_grpc modules at runtime."""
+    tmpdir = tempfile.mkdtemp(prefix="bs_grpc_")
+    proto_file = os.path.join(tmpdir, "blockserver.proto")
+    with open(proto_file, "w") as f:
+        f.write(PROTO_SRC)
+
+    well_known = os.path.join(os.path.dirname(protoc.__file__), "_proto")
+    rc = protoc.main([
+        "grpc_tools.protoc",
+        f"-I{tmpdir}",
+        f"-I{well_known}",
+        f"--python_out={tmpdir}",
+        f"--grpc_python_out={tmpdir}",
+        proto_file,
+    ])
+    if rc != 0:
+        raise SystemExit("blockserver_grpc: protoc failed to compile embedded .proto")
+
+    sys.path.insert(0, tmpdir)
+    import blockserver_pb2          # noqa: E402
+    import blockserver_pb2_grpc     # noqa: E402
+    return blockserver_pb2, blockserver_pb2_grpc 
+
+blockserver_pb2, blockserver_pb2_grpc = _compile_proto()
+
+
+# -----------------------------------------------------------------------------
+# Servicer: maps RPCs
+# -----------------------------------------------------------------------------
+
+class BlockServerServicer(blockserver_pb2_grpc.BlockServerServicer):
+  def __init__(self, raw_blocks):
+    # initialize blocks
+    self.raw_blocks = raw_blocks
+
+  def Put(self, request, context):
+    self.raw_blocks.block[request.block_number] = bytearray(request.data)
+    self.raw_blocks.Sleep()
+    return blockserver_pb2.PutReply(status=0)
+
+  def Get(self, request, context):
+    result = bytes(self.raw_blocks.block[request.block_number])
+    self.raw_blocks.Sleep()
+    return blockserver_pb2.GetReply(data=result)
+
+  def RSM(self, request, context):
+    # Check if this request_id has already been processed (duplicate detection)
+    if request.request_id in self.raw_blocks.rsm_reply_cache:
+      print("RSM_CACHED_REPLY")
+      result = self.raw_blocks.rsm_reply_cache[request.request_id]
+      self.raw_blocks.Sleep()
+      return blockserver_pb2.RSMReply(data=result)
+    RSM_LOCKED = bytearray(b'\x01') * 1
+    result = bytes(self.raw_blocks.block[request.block_number])
+    self.raw_blocks.block[request.block_number] = bytearray(RSM_LOCKED.ljust(BLOCK_SIZE,b'\x01'))
+    # Cache the result for this request_id
+    self.raw_blocks.rsm_reply_cache[request.request_id] = result
+    self.raw_blocks.Sleep()
+    return blockserver_pb2.RSMReply(data=result)
 
 class DiskBlocks():
   def __init__(self, total_num_blocks, block_size, delayat):
@@ -29,80 +113,51 @@ class DiskBlocks():
     if (self.counter % self.delayat) == 0:
       time.sleep(10)
 
+
+# -----------------------------------------------------------------------------
+# Entry point
+# -----------------------------------------------------------------------------
+
 if __name__ == "__main__":
+    ap = argparse.ArgumentParser()
+    ap.add_argument('-nb', '--total_num_blocks', type=int, help='an integer value')
+    ap.add_argument('-bs', '--block_size', type=int, help='an integer value')
+    ap.add_argument('-port', '--port', type=int, help='an integer value')
+    ap.add_argument('-delayat', '--delayat', type=int, help='an integer value')
+    args = ap.parse_args()
 
-  # Construct the argument parser
-  ap = argparse.ArgumentParser()
+    if args.total_num_blocks:
+      TOTAL_NUM_BLOCKS = args.total_num_blocks
+    else:
+      print('Must specify total number of blocks')
+      quit()
 
-  ap.add_argument('-nb', '--total_num_blocks', type=int, help='an integer value')
-  ap.add_argument('-bs', '--block_size', type=int, help='an integer value')
-  ap.add_argument('-port', '--port', type=int, help='an integer value')
-  ap.add_argument('-delayat', '--delayat', type=int, help='an integer value')
+    if args.block_size:
+      BLOCK_SIZE = args.block_size
+    else:
+      print('Must specify block size')
+      quit()
 
-  args = ap.parse_args()
+    if args.port:
+      PORT = args.port
+    else:
+      print('Must specify port number')
+      quit()
 
-  if args.total_num_blocks:
-    TOTAL_NUM_BLOCKS = args.total_num_blocks
-  else:
-    print('Must specify total number of blocks')
-    quit()
+    if args.delayat:
+      delayat = args.delayat
+    else:
+      # initialize delayat with artificially large number
+      delayat = 1000000000
 
-  if args.block_size:
-    BLOCK_SIZE = args.block_size
-  else:
-    print('Must specify block size')
-    quit()
+    # initialize blocks
+    RawBlocks = DiskBlocks(TOTAL_NUM_BLOCKS, BLOCK_SIZE, delayat)
 
-  if args.port:
-    PORT = args.port
-  else:
-    print('Must specify port number')
-    quit()
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    blockserver_pb2_grpc.add_BlockServerServicer_to_server(BlockServerServicer(RawBlocks), server)
+    server.add_insecure_port(f"127.0.0.1:{args.port}")
+    server.start()
 
-  if args.delayat:
-    delayat = args.delayat
-  else:
-    # initialize delayat with artificially large number
-    delayat = 1000000000
+    print(f"Running block server on port {args.port}")
+    server.wait_for_termination()
 
-  # initialize blocks
-  RawBlocks = DiskBlocks(TOTAL_NUM_BLOCKS, BLOCK_SIZE, delayat)
-
-  # Create server
-  server = SimpleXMLRPCServer(("127.0.0.1", PORT), requestHandler=RequestHandler)
-
-
-  def Get(block_number):
-    result = RawBlocks.block[block_number]
-    RawBlocks.Sleep()
-    return result
-
-  server.register_function(Get)
-
-  def Put(block_number, data):
-    RawBlocks.block[block_number] = data.data
-    RawBlocks.Sleep()
-    return 0
-
-  server.register_function(Put)
-
-  def RSM(block_number, request_id):
-    # Check if this request_id has already been processed (duplicate detection)
-    if request_id in RawBlocks.rsm_reply_cache:
-      print("RSM_CACHED_REPLY")
-      result = RawBlocks.rsm_reply_cache[request_id]
-      RawBlocks.Sleep()
-      return result
-    RSM_LOCKED = bytearray(b'\x01') * 1
-    result = RawBlocks.block[block_number]
-    RawBlocks.block[block_number] = bytearray(RSM_LOCKED.ljust(BLOCK_SIZE,b'\x01'))
-    # Cache the result for this request_id
-    RawBlocks.rsm_reply_cache[request_id] = result
-    RawBlocks.Sleep()
-    return result
-
-  server.register_function(RSM)
-
-  # Run the server's main loop
-  print ("Running block server with nb=" + str(TOTAL_NUM_BLOCKS) + ", bs=" + str(BLOCK_SIZE) + " on port " + str(PORT))
-  server.serve_forever()
