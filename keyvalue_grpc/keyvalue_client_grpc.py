@@ -79,9 +79,29 @@ def do_get(stub, key):
             else:
                 raise
 
+def do_delete(stub, key):
+    rpcretry = True
+    while rpcretry:
+        rpcretry = False
+        try:
+            reply = stub.Delete(
+                keyvalue_pb2.DeleteRequest(key=key),
+                timeout=SOCKET_TIMEOUT,
+            )
+            if reply.found:
+                print(reply.value)
+            else:
+                print(f"(no entry for '{key}')")
+        except grpc.RpcError as e:
+            if _is_timeout(e):
+                print("SERVER_TIMED_OUT")
+                time.sleep(RETRY_INTERVAL)
+                rpcretry = True
+            else:
+                raise
 
 def repl(stub):
-    print("Commands: Put <key> <value>  |  Get <key>  |  exit")
+    print("Commands: Put <key> <value>  |  Get <key>  |  Delete <key>  |  exit")
     while True:
         try:
             line = input("> ").strip()
@@ -106,6 +126,11 @@ def repl(stub):
                 print("Usage: Get <key>")
                 continue
             do_get(stub, parts[1])
+        elif cmd == "Delete":
+            if len(parts) != 2:
+                print("Usage: Delete <key>")
+                continue
+            do_delete(stub, parts[1])
         else:
             print(f"Unknown command: {cmd}")
 

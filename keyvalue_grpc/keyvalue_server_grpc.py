@@ -42,9 +42,13 @@ message PutReply    { int32  status = 1; }
 message GetRequest  { string key = 1; }
 message GetReply    { string value = 1; bool found = 2; }
 
+message DeleteRequest { string key = 1; }
+message DeleteReply   { string value = 1; bool found = 2; }
+
 service KeyValue {
     rpc Put (PutRequest) returns (PutReply);
     rpc Get (GetRequest) returns (GetReply);
+    rpc Delete (DeleteRequest) returns (DeleteReply);
 }
 '''
 
@@ -93,6 +97,12 @@ class KeyValueServicer(keyvalue_pb2_grpc.KeyValueServicer):
         if request.key in self.store:
             return keyvalue_pb2.GetReply(value=self.store[request.key], found=True)
         return keyvalue_pb2.GetReply(value="", found=False)
+
+    def Delete(self, request, context):
+        if request.key in self.store:
+            deleted_value = self.store.pop(request.key)
+            return keyvalue_pb2.DeleteReply(value=deleted_value, found=True)
+        return keyvalue_pb2.DeleteReply(value="", found=False)
 
 
 # -----------------------------------------------------------------------------
