@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 from concurrent import futures
+import threading
 
 import grpc
 from grpc_tools import protoc
@@ -80,18 +81,19 @@ class BlockServerServicer(blockserver_pb2_grpc.BlockServerServicer):
     return blockserver_pb2.GetReply(data=result)
 
   def RSM(self, request, context):
-    # Check if this request_id has already been processed (duplicate detection)
-    if request.request_id in self.raw_blocks.rsm_reply_cache:
-      print("RSM_CACHED_REPLY")
-      result = self.raw_blocks.rsm_reply_cache[request.request_id]
+    with self.raw_blocks.rsm_lock:
+      # Check if this request_id has already been processed (duplicate detection)
+      if request.request_id in self.raw_blocks.rsm_reply_cache:
+        print("RSM_CACHED_REPLY")
+        result = self.raw_blocks.rsm_reply_cache[request.request_id]
+        self.raw_blocks.Sleep()
+        return blockserver_pb2.RSMReply(data=result)
+      RSM_LOCKED = bytearray(b'\x01') * 1
+      result = bytes(self.raw_blocks.block[request.block_number])
+      self.raw_blocks.block[request.block_number] = bytearray(RSM_LOCKED.ljust(BLOCK_SIZE,b'\x01'))
+      # Cache the result for this request_id
+      self.raw_blocks.rsm_reply_cache[request.request_id] = result
       self.raw_blocks.Sleep()
-      return blockserver_pb2.RSMReply(data=result)
-    RSM_LOCKED = bytearray(b'\x01') * 1
-    result = bytes(self.raw_blocks.block[request.block_number])
-    self.raw_blocks.block[request.block_number] = bytearray(RSM_LOCKED.ljust(BLOCK_SIZE,b'\x01'))
-    # Cache the result for this request_id
-    self.raw_blocks.rsm_reply_cache[request.request_id] = result
-    self.raw_blocks.Sleep()
     return blockserver_pb2.RSMReply(data=result)
 
 class DiskBlocks():
@@ -101,6 +103,7 @@ class DiskBlocks():
     # initialize request counter
     self.counter = 0
     self.delayat = delayat
+    self.rsm_lock = threading.Lock()
     # RSM reply cache for duplicate detection: request_id -> cached result
     self.rsm_reply_cache = {}
     # Initialize raw blocks
