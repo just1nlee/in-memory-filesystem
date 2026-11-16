@@ -1,0 +1,66 @@
+- To run the test harness (where tX.txt is a test input file for test X):
+
+python3 testharness.py tX.txt
+
+- The output from the test is written to the file CY_clean.log, where Y is the client ID
+
+- In the test file, the following commands are available:
+
+- SERVERSTART(Si, "command-line arguments") - starts a block server Si with given command-line arguments 
+- CLIENTSTART(Cj, "command-line arguments") - starts a file system client Cj with given command-line arguments 
+- SHELLRUN(Cj, "command") - runs a command in the shell of client Cj
+- SERVERKILL(Si) - kills server Si
+- CLIENTKILL(Cj) - kills client Cj
+
+- HW2 note: SERVERSTART is unused and CLIENTSTART runs the in-memory file system as client C0
+- HW3 note: only one server is started in the tests, multiple clients are started
+- Project note: multiple servers are started
+
+- Test example from HW2 - t1.txt:
+
+# t1: Test create and ls
+# Verifies that files and directories can be created and listed
+SERVERSTART(S0, "-nb 256 -bs 256 -port 8000")
+CLIENTSTART(C0, "-bs 256 -nb 256 -is 32 -ni 32 -cid 0 -port 8000")
+
+# Create files and a directory, then list
+SHELLRUN(C0, "create f1")
+SHELLRUN(C0, "create f2")
+SHELLRUN(C0, "mkdir d1")
+SHELLRUN(C0, "ls")
+
+# Verify duplicate create fails
+SHELLRUN(C0, "create f1")
+
+CLIENTKILL(C0)
+SERVERKILL(S0)
+
+- Running the test:
+
+python3 testharness.py t1.txt
+
+- Checking the outputs:
+
+cat C0_clean.log
+
+[cwd=0]%
+[cwd=0]%
+Successfully appended 8 bytes.
+[cwd=0]%
+[cwd=0]%
+[3]:./
+[2]:f1
+[2]:f1link
+[cwd=0]%
+linkdata
+[cwd=0]%
+Successfully appended 8 bytes.
+[cwd=0]%
+linkdatamoredata
+[cwd=0]%
+Error: ERROR_LINK_ALREADY_EXISTS
+
+[cwd=0]%
+Error: ERROR_LINK_TARGET_DOESNOT_EXIST
+
+[cwd=0]%

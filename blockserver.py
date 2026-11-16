@@ -18,19 +18,27 @@ PROTO_SRC = '''syntax = "proto3";
 
 package blockserver;
 
-message PutRequest  { int32  block_number = 1; bytes data = 2; }
-message PutReply    { int32  status = 1; }
+message PutRequest               { int32  block_number = 1; bytes data = 2; }
+message PutReply                 { int32  status = 1; }
 
-message GetRequest  { int32  block_number = 1; }
-message GetReply    { bytes  data = 1; }
+message GetRequest               { int32  block_number = 1; }
+message GetReply                 { bytes  data = 1; }
 
-message RSMRequest  { int32  block_number = 1; string request_id = 2; }
-message RSMReply    { bytes  data = 1; }
+message RSMRequest               { int32  block_number = 1; string request_id = 2; }
+message RSMReply                 { bytes  data = 1; }
+
+message UpdateLastWriterRequest  { int32  cid = 1; }
+message UpdateLastWriterReply    { int32  version_timestamp = 1; }
+
+message ShouldInvalidateRequest  { int32  cid = 1; int32 timestamp_client = 2; }
+message ShouldInvalidateReply    { int32  version_timestamp = 1; }
 
 service BlockServer {
     rpc Put (PutRequest) returns (PutReply);
     rpc Get (GetRequest) returns (GetReply);
     rpc RSM (RSMRequest) returns (RSMReply);
+    rpc UpdateLastWriter (UpdateLastWriterRequest) returns (UpdateLastWriterReply);
+    rpc ShouldInvalidate (ShouldInvalidateRequest) returns (ShouldInvalidateReply);
 }
 '''
 
@@ -70,20 +78,29 @@ class BlockServerServicer(blockserver_pb2_grpc.BlockServerServicer):
     # initialize blocks
     self.raw_blocks = raw_blocks
 
+    # Server state lock
+    self.lock = threading.Lock()
+
+    # Monotonically increasing version stamp
+    self.version_timestamp = 1
+
+    # cid of the client that performed the most recent write
+    self.last_writer_cid = -1
+
   def Put(self, request, context):
-    with self.raw_blocks.lock:
+    with self.lock:
       self.raw_blocks.block[request.block_number] = bytearray(request.data)
       self.raw_blocks.Sleep()
     return blockserver_pb2.PutReply(status=0)
 
   def Get(self, request, context):
-    with self.raw_blocks.lock:
+    with self.lock:
       result = bytes(self.raw_blocks.block[request.block_number])
       self.raw_blocks.Sleep()
     return blockserver_pb2.GetReply(data=result)
 
   def RSM(self, request, context):
-    with self.raw_blocks.lock:
+    with self.lock:
       # Check if this request_id has already been processed (duplicate detection)
       if request.request_id in self.raw_blocks.rsm_reply_cache:
         print("RSM_CACHED_REPLY")
@@ -98,6 +115,21 @@ class BlockServerServicer(blockserver_pb2_grpc.BlockServerServicer):
       self.raw_blocks.Sleep()
     return blockserver_pb2.RSMReply(data=result)
 
+  def UpdateLastWriter(self, request, context):
+    with self.lock:
+      self.version_timestamp += 1
+      self.last_writer_cid = request.cid
+      timestamp = blockserver_pb2.UpdateLastWriterReply(version_timestamp=self.version_timestamp)
+    return timestamp
+
+  def ShouldInvalidate(self, request, context):
+    with self.lock:
+      if request.cid == self.last_writer_cid:
+        timestamp = blockserver_pb2.ShouldInvalidateReply(version_timestamp=request.timestamp_client)
+      else:
+        timestamp = blockserver_pb2.ShouldInvalidateReply(version_timestamp=self.version_timestamp)
+    return timestamp
+
 class DiskBlocks():
   def __init__(self, total_num_blocks, block_size, delayat):
     # This class stores the raw block array
@@ -105,7 +137,6 @@ class DiskBlocks():
     # initialize request counter
     self.counter = 0
     self.delayat = delayat
-    self.lock = threading.Lock()
     # RSM reply cache for duplicate detection: request_id -> cached result
     self.rsm_reply_cache = {}
     # Initialize raw blocks
