@@ -1,6 +1,18 @@
 import pickle, logging
-import xmlrpc.client, socket, time
+import time
 from fsconfig import BlockOutOfRange, InvalidOperation
+import grpc
+
+from blockserver import blockserver_pb2, blockserver_pb2_grpc
+
+
+def _is_timeout(rpc_error):
+    """True if a grpc.RpcError corresponds to a deadline / availability issue worth retrying.
+
+    Same helper as block.py — students can lift it verbatim into their HW3 client.
+    """
+    code = rpc_error.code() if hasattr(rpc_error, 'code') else None
+    return code in (grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.UNAVAILABLE)
 
 
 class DiskBlocks:
@@ -13,10 +25,10 @@ class DiskBlocks:
         else:
             raise InvalidOperation('DiskBlocks::__init__: Must specify valid cid')
 
-        # Initialize XML-RPC client connection to raw block server
-        server_url = 'http://' + config.server_address + ':' + str(config.port)
-        self.block_server = xmlrpc.client.ServerProxy(server_url, use_builtin_types=True)
-        socket.setdefaulttimeout(config.socket_timeout)
+        # Initialize gRPC client connection to raw block server
+        server_url = config.server_address + ':' + str(config.port)
+        channel = grpc.insecure_channel(server_url)
+        self.stub = blockserver_pb2_grpc.BlockServerStub(channel)
 
         # Initialize block cache empty
         self.blockcache = {}
@@ -32,38 +44,51 @@ class DiskBlocks:
             raise BlockOutOfRange('DiskBlocks::put: Block larger than block_size: ' + str(len(block_data)))
 
         if block_number in range(0, self.config.total_num_blocks):
-            putdata = bytearray(block_data.ljust(self.config.block_size, b'\x00'))
+            cache_data = bytearray(block_data.ljust(self.config.block_size, b'\x00'))
+            put_data = bytes(cache_data)
             # Call Put() on the server with retry on timeout
             rpcretry = True
             while rpcretry:
                 rpcretry = False
                 try:
-                    ret = self.block_server.Put(block_number, putdata)
-                except socket.timeout:
-                    print("SERVER_TIMED_OUT")
-                    time.sleep(self.config.retry_interval)
-                    rpcretry = True
+                    reply = self.stub.Put(
+                        blockserver_pb2.PutRequest(block_number=block_number, data=put_data),
+                        timeout=self.config.socket_timeout
+                    )
+                except grpc.RpcError as e:
+                    if _is_timeout(e):
+                        print("SERVER_TIMED_OUT")
+                        time.sleep(self.config.retry_interval)
+                        rpcretry = True
+                    else:
+                        raise InvalidOperation('DiskBlocks::put: Server returns error')
             # Update block cache (write-through)
             if self.config.cmsg:
                 print('CACHE_WRITE_THROUGH ' + str(block_number))
-            self.blockcache[block_number] = putdata
+            self.blockcache[block_number] = cache_data
             # Flag this client as the last writer
             # unless this is a write to the reserved blocks (lock or last-writer)
             if block_number < self.config.total_num_blocks - 2:
                 last_writer_block = self.config.total_num_blocks - 2
-                updated_block = bytearray(self.config.block_size)
-                updated_block[0] = self.client_id
+                temp_block = bytearray(self.config.block_size)
+                temp_block[0] = self.client_id
+                updated_block = bytes(temp_block)
                 rpcretry = True
                 while rpcretry:
                     rpcretry = False
                     try:
-                        self.block_server.Put(last_writer_block, updated_block)
-                    except socket.timeout:
-                        print("SERVER_TIMED_OUT")
-                        time.sleep(self.config.retry_interval)
-                        rpcretry = True
-            if ret == -1:
-                raise InvalidOperation('DiskBlocks::put: Server returns error')
+                        reply = self.stub.Put(
+                            blockserver_pb2.PutRequest(block_number=last_writer_block, data=updated_block),
+                            timeout=self.config.socket_timeout
+                        )
+                    except grpc.RpcError as e:
+                        if _is_timeout(e):
+                            print("SERVER_TIMED_OUT")
+                            time.sleep(self.config.retry_interval)
+                            rpcretry = True
+                        else:
+                            raise InvalidOperation('DiskBlocks::put: Server returns error')
+
             return 0
         else:
             raise BlockOutOfRange('DiskBlocks::put: Block out of range: ' + str(block_number))
@@ -83,11 +108,18 @@ class DiskBlocks:
                 while rpcretry:
                     rpcretry = False
                     try:
-                        data = self.block_server.Get(block_number)
-                    except socket.timeout:
-                        print("SERVER_TIMED_OUT")
-                        time.sleep(self.config.retry_interval)
-                        rpcretry = True
+                        reply = self.stub.Get(
+                            blockserver_pb2.GetRequest(block_number=block_number),
+                            timeout=self.config.socket_timeout
+                        )
+                        data = reply.data
+                    except grpc.RpcError as e:
+                        if _is_timeout(e):
+                            print("SERVER_TIMED_OUT")
+                            time.sleep(self.config.retry_interval)
+                            rpcretry = True
+                        else:
+                            raise InvalidOperation('DiskBlocks::get: Server returns error')
                 # Add to cache
                 self.blockcache[block_number] = data
             return bytearray(data)
@@ -106,11 +138,19 @@ class DiskBlocks:
             while rpcretry:
                 rpcretry = False
                 try:
-                    data = self.block_server.RSM(block_number, request_id)
-                except socket.timeout:
-                    print("SERVER_TIMED_OUT")
-                    time.sleep(self.config.retry_interval)
-                    rpcretry = True
+                    reply = self.stub.RSM(
+                        blockserver_pb2.RSMRequest(block_number=block_number, request_id=request_id),
+                        timeout=self.config.socket_timeout
+                    )
+                    data = reply.data
+                except grpc.RpcError as e:
+                    if _is_timeout(e):
+                        print("SERVER_TIMED_OUT")
+                        time.sleep(self.config.retry_interval)
+                        rpcretry = True
+                    else:
+                        raise InvalidOperation('DiskBlocks::rsm: Server returns error')
+
             return bytearray(data)
 
         raise BlockOutOfRange('DiskBlocks::rsm: Block number larger than total_num_blocks: ' + str(block_number))
