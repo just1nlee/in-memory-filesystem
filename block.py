@@ -36,6 +36,9 @@ class DiskBlocks:
         # Initialize RSM request ID counter for duplicate detection
         self.rsm_request_id = 0
 
+        self.timestamp_client = 0
+        self.write_operation = False
+
     def put(self, block_number, block_data):
         logging.debug(
             'DiskBlocks::put: block number ' + str(block_number) + ' len ' + str(len(block_data)) + '\n' + str(block_data.hex()))
@@ -44,6 +47,8 @@ class DiskBlocks:
             raise BlockOutOfRange('DiskBlocks::put: Block larger than block_size: ' + str(len(block_data)))
 
         if block_number in range(0, self.config.total_num_blocks):
+            if block_number in range(0, self.config.total_num_blocks - 1):
+                self.write_operation = True
             cache_data = bytearray(block_data.ljust(self.config.block_size, b'\x00'))
             put_data = bytes(cache_data)
             # Call Put() on the server with retry on timeout
@@ -66,28 +71,6 @@ class DiskBlocks:
             if self.config.cmsg:
                 print('CACHE_WRITE_THROUGH ' + str(block_number))
             self.blockcache[block_number] = cache_data
-            # Flag this client as the last writer
-            # unless this is a write to the reserved blocks (lock or last-writer)
-            if block_number < self.config.total_num_blocks - 2:
-                last_writer_block = self.config.total_num_blocks - 2
-                temp_block = bytearray(self.config.block_size)
-                temp_block[0] = self.client_id
-                updated_block = bytes(temp_block)
-                rpcretry = True
-                while rpcretry:
-                    rpcretry = False
-                    try:
-                        reply = self.stub.Put(
-                            blockserver_pb2.PutRequest(block_number=last_writer_block, data=updated_block),
-                            timeout=self.config.socket_timeout
-                        )
-                    except grpc.RpcError as e:
-                        if _is_timeout(e):
-                            print("SERVER_TIMED_OUT")
-                            time.sleep(self.config.retry_interval)
-                            rpcretry = True
-                        else:
-                            raise InvalidOperation('DiskBlocks::put: Server returns error')
 
             return 0
         else:
@@ -171,22 +154,54 @@ class DiskBlocks:
 
     def release(self):
         logging.debug('DiskBlocks::release')
+
+        # Update last_writer_cid on the server if a write operation was performed
+        if self.write_operation:
+            self.write_operation = False
+            rpcretry = True
+            while rpcretry:
+                rpcretry = False
+                try:
+                    self.stub.UpdateLastWriter(
+                    blockserver_pb2.UpdateLastWriterRequest(cid=self.client_id),
+                    timeout=self.config.socket_timeout
+                    )
+                except grpc.RpcError as e:
+                    if _is_timeout(e):
+                        print("SERVER_TIMED_OUT")
+                        time.sleep(self.config.retry_interval)
+                        rpcretry = True
+                    else:
+                        raise InvalidOperation('DiskBlocks::release: Server returns error')
+
         rsm_block = self.config.total_num_blocks - 1
         # Put a zero-filled block to release lock
         self.put(rsm_block, bytearray(self.config.rsm_unlocked.ljust(self.config.block_size, b'\x00')))
         return 0
 
     def check_and_invalidate_cache(self):
-        last_writer_block = self.config.total_num_blocks - 2
-        last_writer = self.get(last_writer_block)
-        # If ID of last writer is not self, invalidate and update
-        if last_writer[0] != self.client_id:
+        rpcretry = True
+        while rpcretry:
+            rpcretry = False
+            try:
+                reply = self.stub.ShouldInvalidate(
+                    blockserver_pb2.ShouldInvalidateRequest(cid=self.client_id, timestamp_client=self.timestamp_client),
+                    timeout=self.config.socket_timeout
+                )
+            except grpc.RpcError as e:
+                if _is_timeout(e):
+                    print("SERVER_TIMED_OUT")
+                    time.sleep(self.config.retry_interval)
+                    rpcretry = True
+                else:
+                    raise InvalidOperation('DiskBlocks::check_and_invalidate_cache: Server returns error')
+
+        timestamp_new = reply.version_timestamp
+        if timestamp_new > self.timestamp_client:
             if self.config.cmsg:
                 print("CACHE_INVALIDATED")
             self.blockcache = {}
-            updated_block = bytearray(self.config.block_size)
-            updated_block[0] = self.client_id
-            self.put(last_writer_block, updated_block)
+            self.timestamp_client = timestamp_new
 
     def allocate_data_block(self):
         logging.debug('DiskBlocks::allocate_data_block: ')
